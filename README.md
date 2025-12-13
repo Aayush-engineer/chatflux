@@ -1,156 +1,238 @@
-# 🚀 ChatFlux
-**A Next-Gen Distributed & Real-Time Chat Platform**
+# ChatFlux 🚀
 
+A distributed, real-time chat platform built with modern microservices architecture.
 
-**ChatFlux** is a **cutting-edge chat application** designed for **real-time, resilient, and highly scalable messaging**. Built with a modern tech stack, it delivers **instant communication**, **high-throughput event streaming**, and **efficient data persistence**—perfect for small teams or large-scale enterprise platforms.
-
----
-
-## 💡 Key Features
-
-- **⚡ Real-Time Messaging** – Powered by **Socket.IO**, enjoy seamless bidirectional communication.
-- **📈 Scalable Architecture** – Redis for caching, Kafka for distributed event streaming, and ZooKeeper for coordination.
-- **💾 Persistent Storage** – MongoDB stores chat history reliably.
-- **🖥 Modern Frontend** – Built with **Svelte** for a responsive, lightweight, and dynamic interface.
-- **🔄 Efficient Messaging** – Kafka handles high-throughput messaging, reducing database load.
-- **🌐 Distributed System** – Run across multiple servers for fault tolerance and low latency.
-
----
-
-## 🛠 Tech Stack
-
-| Layer    | Technology                                         |
-|----------|---------------------------------------------------|
-| Backend  | Express.js, Socket.IO, Redis, Kafka, ZooKeeper, MongoDB |
-| Frontend | Svelte                                            |
-| DevOps   | Docker, Node.js                                   |
-
----
-
-## 🏗 Architecture Overview
-
-ChatFlux leverages a **distributed system architecture**:
-
-1. **Client → Socket.IO**: Real-time bidirectional communication.
-2. **Redis**: Message broker and caching layer for efficiency.
-3. **Kafka & ZooKeeper**: Handles event streaming and distributed coordination.
-4. **MongoDB**: Stores chat messages and user data persistently.
-5. **Svelte Frontend**: Lightweight and reactive UI for smooth user experience.
-
-
----
-
-## ⚙ Installation & Setup
-
-### Prerequisites
-- Node.js (v18+)
-- npm (v8+)
-- Docker (for Redis, MongoDB, Kafka, and ZooKeeper)
-
----
-
-### Step 1: Clone the Repository
-```bash
-git clone https://github.com/your-username/ChatFlux.git
-cd ChatFlux
+## 🏗️ Architecture
 
 ```
-### Step 2: Install Dependencies
+User → Socket.IO → Express Server
+              ↓
+    ┌─────────┴─────────┐
+    ↓                   ↓
+Redis Pub/Sub      Kafka Queue
+    ↓                   ↓
+Broadcast          Consumer Batch
+                        ↓
+                   MongoDB
+```
+
+## 🛠️ Tech Stack
+
+- **Backend**: Node.js, Express.js
+- **Real-time**: Socket.IO
+- **Message Queue**: Apache Kafka
+- **Caching**: Redis (Pub/Sub + Cache)
+- **Database**: MongoDB
+- **Monitoring**: Prometheus metrics
+- **Logging**: Winston
+
+## 📋 Prerequisites
+
+- Node.js 18+
+- MongoDB 7+
+- Redis 7+
+- Apache Kafka 3.5+
+- Docker & Docker Compose (optional)
+
+## 🚀 Quick Start
+
+### Using Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone <your-repo>
+cd chatflux
+
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f chatflux-app
+```
+
+### Manual Setup
+
+1. **Install dependencies**
 ```bash
 npm install
-cd public && npm install
-
 ```
 
-### Step 3: Run Prerequisites with Docker
+2. **Configure environment**
 ```bash
-docker run -p 27017:27017 mongo
-docker run -p 2181:2181 zookeeper
-docker run -p 6379:6379 redis/redis-stack-server:latest
-docker run -p 9092:9092 \
--e KAFKA_ZOOKEEPER_CONNECT=<YOUR_LOCAL_IP>:2181 \
--e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://<YOUR_LOCAL_IP>:9092 \
--e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
-confluentinc/cp-kafka
-
+cp .env.example .env
+# Edit .env with your configuration
 ```
 
-### Step 4: Configure Environment Variables
+3. **Start infrastructure** (MongoDB, Redis, Kafka)
 ```bash
+# Using Docker for infrastructure only
+docker-compose up -d mongodb redis kafka
+```
 
-# API Settings
-WEB_API_PORT=8000
-WEB_API_ALLOWED_ORIGIN=["http://localhost:5173", "http://127.0.0.1:5173"]
+4. **Run the application**
+```bash
+# Terminal 1: Main server
+npm start
 
-# Database
-MONGO_CONNECT_STRING="mongodb://127.0.0.1:27017/chatflux-db"
+# Terminal 2: Kafka consumer
+npm run consumer
+```
 
-# Socket.IO
-SOCKET_ALLOWED_ORIGIN=["http://localhost:5173", "http://127.0.0.1:5173"]
+## 📁 Project Structure
+
+```
+chatflux/
+├── app/
+│   ├── config/         # Configuration management
+│   ├── db/             # Database models & operations
+│   ├── jobs/           # Cron jobs
+│   ├── kafka/          # Kafka producer/consumer
+│   ├── redis/          # Redis client & operations
+│   ├── routes/         # API routes
+│   ├── socket/         # Socket.IO server
+│   └── utils/          # Logger & metrics
+├── logs/               # Application logs
+├── index.js            # Main entry point
+├── kafkaConsumerRunner.js  # Consumer service
+├── docker-compose.yml  # Docker orchestration
+└── Dockerfile          # Container image
+```
+
+## 🔧 Configuration
+
+Key environment variables:
+
+```env
+# Server
+WEB_APP_PORT=3000
+NODE_ENV=production
+
+# MongoDB
+MONGO_CONNECT_STRING=mongodb://localhost:27017/chatflux
 
 # Redis
-REDIS_CHANNEL="redis-message-channel"
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_CHANNEL=chat-messages
 
 # Kafka
-KAFKA_GROUP_ID="chatflux-group"
-KAFKA_BROKERS="<YOUR_LOCAL_IP>:9092"
-PROCESS_KAFKA_MESSAGE_LIMIT=100
-KAFKA_TOPIC="chat-updates"
-KAFKA_NO_OF_PARTITIONS=1
-
+KAFKA_BROKERS=localhost:9092
+KAFKA_TOPIC=chat-messages
+KAFKA_GROUP_ID=chat-consumer-group
 ```
 
-### Step 5: Run ChatFlux Locally
+## 📊 API Endpoints
+
+### Health Check
+```http
+GET /health
+```
+
+### Metrics (Prometheus)
+```http
+GET /metrics
+```
+
+### Get Messages
+```http
+POST /get_messages
+Content-Type: application/json
+
+{
+  "limit": 50,
+  "roomId": "global"
+}
+```
+
+### Statistics
+```http
+GET /stats
+```
+
+## 🔌 Socket.IO Events
+
+### Client → Server
+- `chat message` - Send a message
+- `typing` - Typing indicator
+
+### Server → Client
+- `chat message` - Receive broadcast message
+- `user typing` - User typing notification
+- `error` - Error messages
+
+## 📈 Monitoring
+
+Access Prometheus metrics at `/metrics`:
+
+- `chat_messages_total` - Total messages processed
+- `chat_active_connections` - Active WebSocket connections
+- `chat_message_processing_duration_seconds` - Processing latency
+- `kafka_batch_size` - Kafka batch sizes
+- `redis_operation_duration_seconds` - Redis operation times
+
+## 🧪 Testing
+
 ```bash
-node ./app/kafka/KafkaAdmin.js
-node KafkaConsumerRunner.js
-node index.js
-node ./app/Jobs/cron.js
-cd ./public && npm run dev
+# Run tests
+npm test
 
+# Lint code
+npm run lint
 ```
 
+## 🎯 Features
 
-### 📂 Folder Structure
+✅ Horizontal scalability with Redis Pub/Sub  
+✅ Message persistence with Kafka + MongoDB  
+✅ Rate limiting & input validation  
+✅ Structured logging with Winston  
+✅ Prometheus metrics integration  
+✅ Graceful shutdown handling  
+✅ Health checks & monitoring  
+✅ Docker containerization  
 
-ChatFlux/
-├── README.md
-├── package.json
-├── prisma/
-├── public/
-│   ├── auth/
-│   └── chat/
-├── src/
-│   ├── config/
-│   ├── controllers/
-│   ├── middlewares/
-│   ├── routes/
-│   ├── service/
-│   └── utils/
+## 🔐 Security
+
+- Helmet.js for security headers
+- Rate limiting on API endpoints
+- Input validation with Joi
+- CORS protection
+- Message size limits
+
+## 🚦 Production Deployment
+
+1. **Set environment to production**
+```env
+NODE_ENV=production
+```
+
+2. **Use process manager**
+```bash
+pm2 start index.js -i max --name chatflux-app
+pm2 start kafkaConsumerRunner.js --name chatflux-consumer
+```
+
+3. **Setup reverse proxy** (nginx)
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+## 📝 License
+
+ISC
 
 ## 🤝 Contributing
 
-We ❤️ contributions! Follow these steps to get started:
-
-1. **Fork the repository**  
-   Click the **Fork** button at the top-right corner of the repository page.
-
-2. **Create a feature branch**  
-```bash
-git checkout -b feature/YourFeature
-
-
-## 📄 License
-
-This project is licensed under the **MIT License**.  
-See the [LICENSE](LICENSE) file for more details.
-
----
-
-## 📞 Support
-
-For any questions, issues, or suggestions, feel free to reach out:
-
-- **Email:** aayush.21jdai066@jietjodhpur.ac.in
-
-We are happy to help and welcome your feedback!
+Contributions welcome! Please open an issue or submit a PR.

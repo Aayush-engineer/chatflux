@@ -1,41 +1,108 @@
-version: "3.9"
+version: '3.8'
 
 services:
-  mongo:
-    image: mongo:latest
-    container_name: chatflux-mongo
-    restart: unless-stopped
+  # MongoDB
+  mongodb:
+    image: mongo:7
+    container_name: chatflux-mongodb
     ports:
       - "27017:27017"
-
-  redis:
-    image: redis/redis-stack-server:latest
-    container_name: chatflux-redis
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: chatflux
+    networks:
+      - chatflux-network
     restart: unless-stopped
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: chatflux-redis
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - chatflux-network
+    restart: unless-stopped
 
+  # Zookeeper (required for Kafka)
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.5.0
     container_name: chatflux-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
+    networks:
+      - chatflux-network
+    restart: unless-stopped
 
+  # Kafka
   kafka:
-  image: confluentinc/cp-kafka:latest
-  container_name: chatflux-kafka
-  depends_on:
-    - zookeeper
-  ports:
-    - "9092:9092"
-  environment:
-    KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
-    KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://host.docker.internal:9092
-    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: chatflux-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - chatflux-network
+    restart: unless-stopped
 
+  # ChatFlux Main App
+  chatflux-app:
+    build: .
+    container_name: chatflux-app
+    depends_on:
+      - mongodb
+      - redis
+      - kafka
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      MONGO_CONNECT_STRING: mongodb://mongodb:27017/chatflux
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKERS: kafka:9092
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - chatflux-network
+    restart: unless-stopped
+    command: npm start
+
+  # Kafka Consumer (separate service)
+  chatflux-consumer:
+    build: .
+    container_name: chatflux-consumer
+    depends_on:
+      - mongodb
+      - kafka
+    environment:
+      NODE_ENV: production
+      MONGO_CONNECT_STRING: mongodb://mongodb:27017/chatflux
+      KAFKA_BROKERS: kafka:9092
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - chatflux-network
+    restart: unless-stopped
+    command: npm run consumer
+
+networks:
+  chatflux-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  redis_data:

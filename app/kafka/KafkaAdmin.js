@@ -1,30 +1,56 @@
-require("dotenv").config();
-const { kafka } = require("./KafkaClient");
+const { kafka } = require('./KafkaClient');
+const config = require('../config/config');
+const logger = require('../utils/logger');
 
-(async () => {
-    try {
-        const admin = kafka.admin();
-        console.log("Connecting Kafka Admin...");
-        await admin.connect();
-        console.log("Kafka Admin Connected");
+async function initKafkaAdmin() {
+  const admin = kafka.admin();
+  
+  try {
+    logger.info('Connecting to Kafka Admin...');
+    await admin.connect();
+    logger.info('Kafka Admin connected successfully');
 
-        console.log("Creating Topic:", process.env.KAFKA_TOPIC);
+    // Check if topic exists
+    const topics = await admin.listTopics();
+    const topicExists = topics.includes(config.kafka.topic);
 
-        await admin.createTopics({
-            topics: [
-                {
-                    topic: process.env.KAFKA_TOPIC,
-                    numPartitions: Number(process.env.KAFKA_NO_OF_PARTITIONS) || 1
-                }
+    if (topicExists) {
+      logger.info(`Topic "${config.kafka.topic}" already exists`);
+    } else {
+      logger.info(`Creating topic: ${config.kafka.topic}`);
+      
+      await admin.createTopics({
+        topics: [
+          {
+            topic: config.kafka.topic,
+            numPartitions: config.kafka.partitions,
+            replicationFactor: 1, // Set to 3 in production with multiple brokers
+            configEntries: [
+              { name: 'retention.ms', value: '604800000' }, // 7 days
+              { name: 'compression.type', value: 'snappy' }
             ]
-        });
-
-        console.log("Topic Created Successfully!");
-
-        await admin.disconnect();
-        console.log("Kafka Admin Disconnected");
-    } catch (err) {
-        console.error("Kafka Admin Error:", err);
+          }
+        ],
+        waitForLeaders: true
+      });
+      
+      logger.info(`Topic "${config.kafka.topic}" created successfully`);
     }
-})();
 
+    await admin.disconnect();
+    logger.info('Kafka Admin disconnected');
+    
+  } catch (error) {
+    logger.error('Kafka Admin error:', error);
+    
+    try {
+      await admin.disconnect();
+    } catch (disconnectError) {
+      logger.error('Error disconnecting Kafka Admin:', disconnectError);
+    }
+    
+    throw error;
+  }
+}
+
+module.exports = initKafkaAdmin;

@@ -1,86 +1,212 @@
-const initStoreKafka = require("../kafka/KafkaProducer");
-const { Server } = require("socket.io");
-const redis = require('ioredis');
-const http = require("http");
-const redisChannel = process.env.REDIS_CHANNEL
-const redisClient = redis.createClient();
-const redisPub = new redis();
-const redisNor = new redis();
+const { Server } = require('socket.io');
+const http = require('http');
+const config = require('../config/config');
+const logger = require('../utils/logger');
+const { messageCounter, activeConnections, messageProcessingDuration } = require('../utils/metrics');
+const { redisSub, publishMessage, addMessageToRedis } = require('../redis/redis');
+const sendToKafka = require('../kafka/KafkaProducer');
 
 let io;
 let server;
 
+async function createServer(app) {
+  server = http.createServer(app);
+  
+  io = new Server(server, {
+    cors: {
+      origin: config.cors.socketOrigins,
+      methods: ['GET', 'POST'],
+      credentials: true
+    },
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    maxHttpBufferSize: 1e6, // 1MB max message size
+    transports: ['websocket', 'polling']
+  });
 
-const createServer = async (app) => {
-    server = http.createServer(app);
-    io = new Server(server,{
-        cors:{
-            origin: JSON.parse(process.env.SOCKET_ALLOWED_ORIGIN)
-        }
-    });
-    await init();
+  await initSocketServer();
 }
 
-const init = async () => {
-
-    redisClient.on("connect", function () {
-        console.log(`connected to redis`);
-    });
-
-    redisClient.on("error", function (err) {
-        console.log("redis connection error " + err);
+async function initSocketServer() {
+  try {
+    // Subscribe to Redis channel for message broadcasting
+    await redisSub.subscribe(config.redis.channel, (err, count) => {
+      if (err) {
+        logger.error('Failed to subscribe to Redis channel:', err);
         throw err;
+      }
+      logger.info(`Subscribed to ${count} Redis channel(s)`);
     });
 
-    redisClient.on("end", function (err) {
-        console.log("redis connection end " + err);
+    // Handle incoming messages from Redis
+    redisSub.on('message', (channel, message) => {
+      try {
+        const parsedMessage = JSON.parse(message);
+        logger.debug('Broadcasting message from Redis', { 
+          channel, 
+          socketId: parsedMessage.socket_id 
+        });
+        
+        io.emit('chat message', parsedMessage);
+      } catch (error) {
+        logger.error('Error parsing Redis message:', error);
+      }
     });
 
+    // Socket.IO connection handler
+    io.on('connection', (socket) => {
+      activeConnections.inc();
+      logger.info('New client connected', { 
+        socketId: socket.id,
+        transport: socket.conn.transport.name
+      });
 
+      // Send join message
+      pushMessage({
+        socket_id: socket.id,
+        message: `${socket.id} joined the chat!`,
+        messageType: 'join'
+      });
 
-    redisClient.subscribe(redisChannel, (err, count) => {
-        if (err) {
-            console.error("Failed to subscribe: %s", err.message);
-        } else {
-            console.log(
-                `Subscribed successfully! This client is currently subscribed to ${count} channels.`
-            );
+      // Handle chat messages
+      socket.on('chat message', async (data) => {
+        const end = messageProcessingDuration.startTimer();
+        
+        try {
+          // Validate message
+          if (!data || typeof data !== 'string') {
+            socket.emit('error', { message: 'Invalid message format' });
+            end();
+            return;
+          }
+
+          if (data.length > 5000) {
+            socket.emit('error', { message: 'Message too long (max 5000 characters)' });
+            end();
+            return;
+          }
+
+          await pushMessage({
+            socket_id: socket.id,
+            message: data,
+            messageType: 'user'
+          });
+
+          messageCounter.inc({ type: 'user' });
+          end();
+        } catch (error) {
+          logger.error('Error handling chat message:', error);
+          socket.emit('error', { message: 'Failed to send message' });
+          end();
         }
-    })
+      });
 
-    const pushMessage = async (data,socket_id) => {
-        let l = { message: `${data}`, "createdAt":Date.now(), socket_id };
-        
-        let message = JSON.stringify(l);
-        redisPub.publish(redisChannel, message);
-        await redisNor.rpush("messages", message);
-        await initStoreKafka(message);
-    }
+      // Handle typing indicator
+      socket.on('typing', (isTyping) => {
+        socket.broadcast.emit('user typing', {
+          socketId: socket.id,
+          isTyping
+        });
+      });
 
-    // Socket.io
-    io.on("connection", (socket) => {
-        pushMessage(`${socket.id} Joined the Chat!`,socket.id);
-        
-        socket.on('chat message', async (data) => {
-            pushMessage(data,socket.id);
+      // Handle disconnection
+      socket.on('disconnect', (reason) => {
+        activeConnections.dec();
+        logger.info('Client disconnected', { 
+          socketId: socket.id,
+          reason 
         });
 
+        pushMessage({
+          socket_id: socket.id,
+          message: `${socket.id} left the chat!`,
+          messageType: 'leave'
+        });
 
-        socket.on("disconnect", data => {
-            pushMessage(`${socket.id} Left the Chat!`,socket.id);
-        })
+        messageCounter.inc({ type: 'system' });
+      });
 
-
+      // Handle errors
+      socket.on('error', (error) => {
+        logger.error('Socket error:', { socketId: socket.id, error });
+      });
     });
 
+    // Handle Socket.IO errors
+    io.engine.on('connection_error', (err) => {
+      logger.error('Connection error:', {
+        code: err.code,
+        message: err.message,
+        context: err.context
+      });
+    });
 
-    redisClient.on("message", (channel, message) => {
-        console.log(message)
-        io.emit('chat message', JSON.parse(message));
-    })
+    // Start server
+    server.listen(config.port, () => {
+      logger.info(`Server started successfully`, {
+        port: config.port,
+        env: config.env
+      });
+    });
 
-    server.listen(process.env.WEB_APP_PORT, () => console.log(`Server Started at PORT:${process.env.WEB_APP_PORT}`));
+  } catch (error) {
+    logger.error('Failed to initialize Socket server:', error);
+    throw error;
+  }
+}
 
+/**
+ * Process and distribute message through the pipeline
+ */
+async function pushMessage(messageData) {
+  try {
+    const message = {
+      ...messageData,
+      createdAt: Date.now()
+    };
+
+    // Execute all operations in parallel for speed
+    await Promise.all([
+      // 1. Publish to Redis Pub/Sub (instant broadcast)
+      publishMessage(config.redis.channel, message),
+      
+      // 2. Store in Redis cache
+      addMessageToRedis(message),
+      
+      // 3. Send to Kafka for persistence
+      sendToKafka(message)
+    ]);
+
+    logger.debug('Message pushed successfully', { 
+      socketId: message.socket_id,
+      type: message.messageType 
+    });
+  } catch (error) {
+    logger.error('Error pushing message:', error);
+    throw error;
+  }
+}
+
+/**
+ * Gracefully shutdown server
+ */
+async function closeServer() {
+  return new Promise((resolve) => {
+    logger.info('Closing Socket.IO server...');
+    
+    io.close(() => {
+      logger.info('Socket.IO server closed');
+      
+      server.close(() => {
+        logger.info('HTTP server closed');
+        resolve();
+      });
+    });
+  });
+}
+
+module.exports = { 
+  createServer, 
+  closeServer,
+  getIO: () => io 
 };
-
-module.exports = { createServer }
